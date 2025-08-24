@@ -49,6 +49,7 @@ df_temp = df_bronze_clientes.select(
     F.col("DS_SEGMENTO").alias("ds_segmento"),
     F.col("DS_SUBSEGMENTO").alias("ds_subsegmento"),
     F.col("DS_PROD").alias("ds_prod"),
+    F.col("DS_LIN_REC").alias("ds_lin_rec"),
     F.col("FAT_FAIXA").alias("fat_faixa"),
     F.col("MARCA_TOTVS").alias("marca_totvs"),
     F.col("MODAL_COMERC").alias("modal_comerc"),
@@ -63,23 +64,24 @@ df_temp = df_bronze_clientes.select(
 })
 
 # Agrupando por cliente e agregando as métricas e datas
-df_silver_clientes = df_temp.groupBy("cd_cliente").agg(
-    F.min("dt_assinatura_contrato").alias("dt_inicio_contrato"),
-    F.max("dt_assinatura_contrato").alias("dt_ultimo_contrato"),
-    F.sum("vl_total_contrato").alias("vl_total_contrato"),
-    F.first("cidade").alias("cidade"),
-    F.first("ds_cnae").alias("ds_cnae"),
-    F.first("ds_segmento").alias("ds_segmento"),
-    F.first("ds_subsegmento").alias("ds_subsegmento"),
-    F.first("ds_prod").alias("ds_prod"),
-    F.first("fat_faixa").alias("fat_faixa"),
-    F.first("marca_totvs").alias("marca_totvs"),
-    F.first("modal_comerc").alias("modal_comerc"),
-    F.first("uf").alias("uf"),
-    F.first("situacao_contrato").alias("situacao_contrato")
+df_silver_clientes = df_temp.select(
+    F.col("cd_cliente").alias("cd_cliente"),
+    F.col("dt_assinatura_contrato").alias("dt_assinatura_contrato"),
+    F.col("vl_total_contrato").alias("vl_total_contrato"),
+    F.col("cidade").alias("cidade"),
+    F.col("ds_cnae").alias("ds_cnae"),
+    F.col("ds_segmento").alias("ds_segmento"),
+    F.col("ds_subsegmento").alias("ds_subsegmento"),
+    F.col("ds_prod").alias("ds_prod"),
+    F.col("ds_lin_rec").alias("ds_lin_rec"),
+    F.col("fat_faixa").alias("fat_faixa"),
+    F.col("marca_totvs").alias("marca_totvs"),
+    F.col("modal_comerc").alias("modal_comerc"),
+    F.col("uf").alias("uf"),
+    F.col("situacao_contrato").alias("situacao_contrato")
 )
 
-print("\nSchema da tabela de clientes na camada Silver (agregada):")
+print("\nSchema da tabela de clientes na camada Silver:")
 df_silver_clientes.printSchema()
 
 # ==============================================================================
