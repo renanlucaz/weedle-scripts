@@ -98,12 +98,12 @@ try:
     
     window_spec = Window.orderBy(F.monotonically_increasing_id())
     df_gold_ft_nps = df_final.select(
-        "SK_CLIENTE", "SK_PRODUTO", "SK_TEMPO",
+        "SK_CLIENTE", "SK_TEMPO",
         F.col("ds_nota").alias("NOTA_NPS"),
         F.col("tipo_nps").alias("TIPO_NPS")
     )
     df_gold_ft_nps = df_gold_ft_nps.withColumn("SK_FATO_NPS", F.row_number().over(window_spec).cast(IntegerType())) \
-                                  .select("SK_FATO_NPS", "SK_CLIENTE", "SK_PRODUTO", "SK_TEMPO", "NOTA_NPS", "TIPO_NPS")
+                                  .select("SK_FATO_NPS", "SK_CLIENTE", "SK_TEMPO", "NOTA_NPS", "TIPO_NPS")
     
     print("\nDataFrame para a FATO_NPS criado com sucesso.")
     print(f"Total de registros de NPS: {df_gold_ft_nps.count()}")
