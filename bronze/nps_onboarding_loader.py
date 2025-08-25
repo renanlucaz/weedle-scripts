@@ -42,13 +42,15 @@ if df_bronze_nps is not None:
     df_silver_nps = df_bronze_nps.select(
         F.to_date(F.to_timestamp(F.col("`Data de resposta`"), "yyyy-MM-dd'T'HH:mm:ss")).alias("dt_resposta"),
         F.col("`Cod Cliente`").alias("cd_cliente"),
-        F.col("`Nota NPS onboarding`").cast(IntegerType()).alias("nota_nps_onboarding"),
+        F.col("`Nota NPS onboarding`").cast(IntegerType()).alias("nota_nps"),
         F.col("`Nota atendimento CS`").alias("nota_atendimento_cs"),
         F.col("`Nota duracao reuniao`").alias("nota_duracao_reuniao"),
         F.col("`Nota clareza acesso`").alias("nota_clareza_acesso"),
         F.col("`Nota clareza informacoes`").alias("nota_clareza_informacoes"),
         F.col("`Nota expectativas`").alias("nota_expectativas")
     )
+
+    df_silver_nps = df_silver_nps.withColumn("tipo_nps", F.lit("onboarding"))
 
     # Preenche nulos com -1 para as notas
     df_silver_nps = df_silver_nps.na.fill(-1, subset=[

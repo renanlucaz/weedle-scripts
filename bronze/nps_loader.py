@@ -57,6 +57,8 @@ df_silver_nps = df_bronze_nps.select(
     F.col("Nota_Software_Atualizacao").alias("nota_software_atualizacao")
 )
 
+df_silver_nps = df_silver_nps.withColumn("tipo_nps", F.lit("relacional"))
+
 # Tratamento de valores nulos, preenchendo as notas com -1 para indicar ausência de resposta
 # A nota NPS principal (nota_nps) não tem nulos, então preenchemos as notas secundárias
 df_silver_nps = df_silver_nps.na.fill(-1, subset=[

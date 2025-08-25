@@ -54,6 +54,8 @@ if df_bronze_nps is not None:
         F.col("Nota Facilidade").alias("nota_facilidade"),
         F.col("Nota Flexibilidade").alias("nota_flexibilidade")
     )
+
+    df_silver_nps = df_silver_nps.withColumn("tipo_nps", F.lit("aquisicao"))
     
     # Tratamento de valores nulos, preenchendo as notas com -1 para indicar ausência de resposta
     df_silver_nps = df_silver_nps.na.fill(-1, subset=[
@@ -61,7 +63,7 @@ if df_bronze_nps is not None:
         "nota_conhecimento",
         "nota_custo",
         "nota_facilidade",
-        "nota_flexibilidade"
+        "nota_flexibilidade",
     ])
 
     print("\nSchema da tabela NPS de Aquisição na camada Silver:")

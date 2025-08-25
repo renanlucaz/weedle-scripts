@@ -53,6 +53,8 @@ if df_bronze_nps is not None:
         F.col("Cod Cliente").alias("cd_cliente")
     )
     
+    df_silver_nps = df_silver_nps.withColumn("tipo_nps", F.lit("produto"))
+
     # Tratamento de valores nulos, preenchendo com uma string 'Nao Informado'
     df_silver_nps = df_silver_nps.na.fill({
         "nome_produto": "Nao Informado"

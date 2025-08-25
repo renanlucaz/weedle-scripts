@@ -54,6 +54,8 @@ if df_bronze_nps is not None:
         F.col("Nota_Satisfacao").alias("nota_satisfacao"),
         F.col("cliente").alias("cd_cliente")
     )
+
+    df_silver_nps = df_silver_nps.withColumn("tipo_nps", F.lit("suporte"))
     
     # Tratamento de valores nulos, preenchendo as notas com -1 para indicar ausência de resposta
     df_silver_nps = df_silver_nps.na.fill(-1, subset=[

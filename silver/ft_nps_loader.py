@@ -1,180 +1,127 @@
 import pyspark.sql.functions as F
 from pyspark.sql import SparkSession
-from pyspark.sql.types import IntegerType, DoubleType, StringType
+from pyspark.sql.window import Window
+from pyspark.sql.types import IntegerType
 
-# Inicializa a sessão Spark
-spark = SparkSession.builder.appName("SilverToGoldFatoNPS").getOrCreate()
+# ==============================================================================
+# 0. Configuração de Variáveis
+# ==============================================================================
+BUCKET_NAME = "weedle"
+TENANCY_NAMESPACE = "gr7jlaomnxx1" 
+
+SILVER_PREFIX = f"oci://{BUCKET_NAME}@{TENANCY_NAMESPACE}/silver"
+GOLD_PREFIX = f"oci://{BUCKET_NAME}@{TENANCY_NAMESPACE}/gold"
+
+# Caminhos de entrada para todos os tipos de NPS e tickets
+silver_path_nps_aquisicao = f"{SILVER_PREFIX}/nps_transacional_aquisicao"
+silver_path_nps_onboarding = f"{SILVER_PREFIX}/nps_transacional_onboarding"
+silver_path_nps_produto = f"{SILVER_PREFIX}/nps_transacional_produto"
+silver_path_nps_relacional = f"{SILVER_PREFIX}/nps_relacional"
+silver_path_nps_suporte = f"{SILVER_PREFIX}/nps_transacional_suporte"
+silver_path_tickets = f"{SILVER_PREFIX}/tickets" # <-- Caminho para os tickets
+
+# Caminhos para as dimensões
+gold_path_dim_cliente = f"{GOLD_PREFIX}/dim_cliente"
+gold_path_dim_produto = f"{GOLD_PREFIX}/dim_produto"
+gold_path_dim_tempo = f"{GOLD_PREFIX}/dim_tempo"
+
+spark = SparkSession.builder.appName("SilverToGoldFatoNPS_Atualizado").getOrCreate()
 
 # ==============================================================================
 # 1. Parâmetros de Conexão JDBC
 # ==============================================================================
-# A conexão JDBC será usada apenas para a escrita final da Fato
-jdbc_url = "jdbc:oracle:thin:@oracle.fiap.com.br:1521:orcl" 
+jdbc_url = "jdbc:oracle:thin:@oracle.fiap.com.br:1521:orcl"
+properties = { "user": "rm555625", "password": "100203", "driver": "oracle.jdbc.OracleDriver" }
 
-properties = {
-    "user": "rm555625",
-    "password": "100203",
-    "driver": "oracle.jdbc.OracleDriver"
-}
-
-# Caminhos dos dados limpos da camada Silver e Gold
-BUCKET_NAME = "weedle"
-TENANCY_NAMESPACE = "rm555625"
-SILVER_PREFIX = f"oci://{BUCKET_NAME}@gr7jlaomnxx1/silver"
-GOLD_PREFIX = f"oci://{BUCKET_NAME}@gr7jlaomnxx1/gold"
-silver_path_nps_relacional = f"{SILVER_PREFIX}/nps_relacional"
-silver_path_nps_produto = f"{SILVER_PREFIX}/nps_transacional_produto"
-silver_path_nps_suporte = f"{SILVER_PREFIX}/nps_transacional_suporte"
-silver_path_nps_onboarding = f"{SILVER_PREFIX}/nps_transacional_onboarding"
-silver_path_nps_aquisicao = f"{SILVER_PREFIX}/nps_transacional_aquisicao"
-silver_path_tickets = f"{SILVER_PREFIX}/tickets"
-
-print("Lendo dados da camada Silver...")
-
-df_silver_tickets = None
+print("Lendo dados de NPS da camada Silver e dimensões da camada Gold...")
 
 # ==============================================================================
-# 2. Leitura dos Dados da Camada Silver e Dimensões da Camada GOLD
+# 2. Leitura e Processamento para a Fato (DataFrame)
 # ==============================================================================
 try:
-    df_silver_nps_relacional = spark.read.parquet(silver_path_nps_relacional).cache()
-    df_silver_nps_produto = spark.read.parquet(silver_path_nps_produto).cache()
-    df_silver_nps_suporte = spark.read.parquet(silver_path_nps_suporte).cache()
-    df_silver_nps_onboarding = spark.read.parquet(silver_path_nps_onboarding).cache()
-    df_silver_nps_aquisicao = spark.read.parquet(silver_path_nps_aquisicao).cache()
-    df_silver_tickets = spark.read.parquet(silver_path_tickets).cache() # Lendo a tabela de tickets para a correção
+    # Leitura dos DataFrames de NPS e Tickets
+    df_nps_aquisicao = spark.read.parquet(silver_path_nps_aquisicao)
+    df_nps_onboarding = spark.read.parquet(silver_path_nps_onboarding)
+    df_nps_produto_raw = spark.read.parquet(silver_path_nps_produto)
+    df_nps_relacional = spark.read.parquet(silver_path_nps_relacional)
+    df_nps_suporte_raw = spark.read.parquet(silver_path_nps_suporte) # Lendo como dados brutos
+    df_silver_tickets = spark.read.parquet(silver_path_tickets)     # Lendo os tickets
 
-    # Lendo as dimensões dos arquivos Parquet da CAMADA GOLD
-    df_dim_cliente = spark.read.parquet(f"{GOLD_PREFIX}/dim_cliente").select("SK_CLIENTE", "CD_CLIENTE").cache()
-    df_dim_produto = spark.read.parquet(f"{GOLD_PREFIX}/dim_produto").select("SK_PRODUTO", "CD_PRODUTO", "NM_PRODUTO").cache()
-    df_dim_tempo = spark.read.parquet(f"{GOLD_PREFIX}/dim_tempo").select("SK_TEMPO", "DATA").cache()
+    # Leitura das Dimensões
+    df_dim_cliente = spark.read.parquet(gold_path_dim_cliente)
+    df_dim_produto = spark.read.parquet(gold_path_dim_produto)
+    df_dim_tempo = spark.read.parquet(gold_path_dim_tempo)
 
-    print("Dados das camadas Silver e Gold lidos com sucesso.")
+    # --- LÓGICA ATUALIZADA ---
+    # Passo 1: Enriquecer NPS de Suporte com a data do ticket
+    df_mapa_ticket_data = df_silver_tickets.select(
+        F.col("bk_ticket"),
+        F.to_date(F.col("dt_criacao")).alias("dt_resposta") # Padroniza nome da coluna de data
+    )
+    df_nps_suporte_enriquecido = df_nps_suporte_raw.join(
+        df_mapa_ticket_data,
+        "bk_ticket",
+        "inner"
+    ).select(
+        "cd_cliente", "dt_resposta", 
+        F.col("nota_nps").alias("ds_nota"), # Padroniza nome da coluna de nota
+        "tipo_nps", F.lit(None).alias("cd_prod")
+    )
+    print("Dados de NPS de Suporte enriquecidos com a data do ticket.")
+    
+    # Passo 2: Tratar NPS de Produto (lógica anterior)
+    df_nps_produto_enriquecido = df_nps_produto_raw.join(
+        df_dim_produto,
+        df_nps_produto_raw.nome_produto == df_dim_produto.DS_PRODUTO,
+        "inner"
+    ).select(
+        "cd_cliente", "dt_resposta",
+        F.col("nota_nps").alias("ds_nota"),
+        "tipo_nps",
+        F.col("CD_PRODUTO").alias("cd_prod")
+    )
+
+    # Passo 3: Unificar todos os DataFrames de NPS
+    df_nps_unificado = df_nps_aquisicao.select(F.col("cd_cliente"), F.col("dt_resposta"), F.col("nota_nps").alias("ds_nota"), "tipo_nps", F.lit(None).alias("cd_prod")) \
+        .unionByName(df_nps_onboarding.select(F.col("cd_cliente"), F.col("dt_resposta"), F.col("nota_nps").alias("ds_nota"), "tipo_nps", F.lit(None).alias("cd_prod"))) \
+        .unionByName(df_nps_produto_enriquecido) \
+        .unionByName(df_nps_relacional.select(F.col("cd_cliente"), F.col("dt_resposta"), F.col("nota_nps").alias("ds_nota"), "tipo_nps", F.lit(None).alias("cd_prod"))) \
+        .unionByName(df_nps_suporte_enriquecido) # Usando a versão enriquecida
+
+    print("Todos os arquivos de NPS foram unificados com sucesso.")
+
+    # O resto do script continua normalmente...
+    df_base = df_nps_unificado.join(df_dim_cliente, df_nps_unificado.cd_cliente == df_dim_cliente.CD_CLIENTE, "inner")
+    df_base = df_base.join(df_dim_produto, df_base.cd_prod == df_dim_produto.CD_PRODUTO, "left")
+    df_base = df_base.withColumn("data_para_join", F.to_date(F.col("dt_resposta")))
+    df_final = df_base.join(df_dim_tempo, df_base.data_para_join == df_dim_tempo.DATA, "inner")
+    
+    window_spec = Window.orderBy(F.monotonically_increasing_id())
+    df_gold_ft_nps = df_final.select(
+        "SK_CLIENTE", "SK_PRODUTO", "SK_TEMPO",
+        F.col("ds_nota").alias("NOTA_NPS"),
+        F.col("tipo_nps").alias("TIPO_NPS")
+    )
+    df_gold_ft_nps = df_gold_ft_nps.withColumn("SK_FATO_NPS", F.row_number().over(window_spec).cast(IntegerType())) \
+                                  .select("SK_FATO_NPS", "SK_CLIENTE", "SK_PRODUTO", "SK_TEMPO", "NOTA_NPS", "TIPO_NPS")
+    
+    print("\nDataFrame para a FATO_NPS criado com sucesso.")
+    print(f"Total de registros de NPS: {df_gold_ft_nps.count()}")
 
 except Exception as e:
-    print(f"Erro ao ler arquivos ou tabelas. Verifique a existência dos dados: {e}")
-    spark.stop()
-
-
-# ==============================================================================
-# 3. Processamento para a Tabela Fato (Lógica Corrigida)
-# ==============================================================================
-# Adicionar a data de criação do ticket à tabela de NPS de suporte
-df_nps_suporte_com_data = df_silver_nps_suporte.join(
-    df_silver_tickets.select("bk_ticket", "dt_criacao"),
-    on="bk_ticket",
-    how="left"
-).select(
-    F.col("dt_criacao").alias("dt_resposta"),
-    F.col("cd_cliente"),
-    F.col("nota_nps"),
-    F.col("bk_ticket")
-)
-
-# Unir as métricas de NPS em um único DataFrame, seguindo a estrutura da FATO_NPS
-# Esta é a lógica que alinha os schemas para a união
-df_nps_relacional_formatado = df_silver_nps_relacional.select(
-    F.col("dt_resposta"), F.col("cd_cliente"), F.col("nota_nps").alias("RESPOSTA_NPS"),
-    F.lit(None).cast(DoubleType()).alias("NOTA_SATISFACAO_PRODUTO"),
-    F.lit(None).cast(DoubleType()).alias("NOTA_SATISFACAO_SUPORTE"),
-    F.lit(None).cast(DoubleType()).alias("NOTA_SATISFACAO_ONBOARDING"),
-    F.lit(None).cast(DoubleType()).alias("NOTA_SATISFACAO_AQUISICAO"),
-    F.lit(None).cast(IntegerType()).alias("BK_TICKET"),
-    F.lit(None).cast(StringType()).alias("NM_PRODUTO")
-)
-
-df_nps_produto_formatado = df_silver_nps_produto.select(
-    F.col("dt_resposta"), F.col("cd_cliente"), F.col("nota_nps").alias("RESPOSTA_NPS"),
-    F.col("nota_nps").alias("NOTA_SATISFACAO_PRODUTO"),
-    F.lit(None).cast(DoubleType()).alias("NOTA_SATISFACAO_SUPORTE"),
-    F.lit(None).cast(DoubleType()).alias("NOTA_SATISFACAO_ONBOARDING"),
-    F.lit(None).cast(DoubleType()).alias("NOTA_SATISFACAO_AQUISICAO"),
-    F.lit(None).cast(IntegerType()).alias("BK_TICKET"),
-    F.col("nome_produto").alias("NM_PRODUTO")
-)
-
-df_nps_suporte_formatado = df_nps_suporte_com_data.select(
-    F.col("dt_resposta"), F.col("cd_cliente"), F.col("nota_nps").alias("RESPOSTA_NPS"),
-    F.lit(None).cast(DoubleType()).alias("NOTA_SATISFACAO_PRODUTO"),
-    F.col("nota_nps").alias("NOTA_SATISFACAO_SUPORTE"),
-    F.lit(None).cast(DoubleType()).alias("NOTA_SATISFACAO_ONBOARDING"),
-    F.lit(None).cast(DoubleType()).alias("NOTA_SATISFACAO_AQUISICAO"),
-    F.col("bk_ticket").alias("BK_TICKET"),
-    F.lit(None).cast(StringType()).alias("NM_PRODUTO")
-)
-
-df_nps_onboarding_formatado = df_silver_nps_onboarding.select(
-    F.col("dt_resposta"), F.col("cd_cliente"), F.col("nota_nps_onboarding").alias("RESPOSTA_NPS"),
-    F.lit(None).cast(DoubleType()).alias("NOTA_SATISFACAO_PRODUTO"),
-    F.lit(None).cast(DoubleType()).alias("NOTA_SATISFACAO_SUPORTE"),
-    F.col("nota_nps_onboarding").alias("NOTA_SATISFACAO_ONBOARDING"),
-    F.lit(None).cast(DoubleType()).alias("NOTA_SATISFACAO_AQUISICAO"),
-    F.lit(None).cast(IntegerType()).alias("BK_TICKET"),
-    F.lit(None).cast(StringType()).alias("NM_PRODUTO")
-)
-
-df_nps_aquisicao_formatado = df_silver_nps_aquisicao.select(
-    F.col("dt_resposta"), F.col("cd_cliente"), F.col("nota_nps").alias("RESPOSTA_NPS"),
-    F.lit(None).cast(DoubleType()).alias("NOTA_SATISFACAO_PRODUTO"),
-    F.lit(None).cast(DoubleType()).alias("NOTA_SATISFACAO_SUPORTE"),
-    F.lit(None).cast(DoubleType()).alias("NOTA_SATISFACAO_ONBOARDING"),
-    F.col("nota_nps").alias("NOTA_SATISFACAO_AQUISICAO"),
-    F.lit(None).cast(IntegerType()).alias("BK_TICKET"),
-    F.lit(None).cast(StringType()).alias("NM_PRODUTO")
-)
-
-# União de todos os DataFrames formatados
-df_nps_consolidado = df_nps_relacional_formatado.unionByName(df_nps_produto_formatado)\
-    .unionByName(df_nps_suporte_formatado)\
-    .unionByName(df_nps_onboarding_formatado)\
-    .unionByName(df_nps_aquisicao_formatado)
-
-# Juntar com as dimensões para obter as SKs
-df_fato = df_nps_consolidado.join(
-    F.broadcast(df_dim_cliente), on="cd_cliente", how="left"
-).join(
-    F.broadcast(df_dim_tempo), df_nps_consolidado.dt_resposta == df_dim_tempo.DATA, how="left"
-).join(
-    F.broadcast(df_dim_produto), df_nps_consolidado.NM_PRODUTO == df_dim_produto.NM_PRODUTO, how="left"
-)
-
-# Selecionar as colunas finais para a FATO_NPS
-df_gold_fato_nps = df_fato.select(
-    F.col("sk_cliente").alias("SK_CLIENTE"),
-    F.col("sk_produto").alias("SK_PRODUTO"),
-    F.col("sk_tempo").alias("SK_TEMPO"),
-    F.col("RESPOSTA_NPS"),
-    F.coalesce(F.col("NOTA_SATISFACAO_PRODUTO"), F.lit(-1)).alias("NOTA_SATISFACAO_PRODUTO"),
-    F.coalesce(F.col("NOTA_SATISFACAO_SUPORTE"), F.lit(-1)).alias("NOTA_SATISFACAO_SUPORTE"),
-    F.coalesce(F.col("NOTA_SATISFACAO_ONBOARDING"), F.lit(-1)).alias("NOTA_SATISFACAO_ONBOARDING"),
-    F.coalesce(F.col("NOTA_SATISFACAO_AQUISICAO"), F.lit(-1)).alias("NOTA_SATISFACAO_AQUISICAO"),
-    F.col("BK_TICKET")
-)
-
-# Adicionar a Surrogate Key da tabela fato
-df_gold_fato_nps = df_gold_fato_nps.withColumn(
-    "SK_FATO_NPS",
-    F.monotonically_increasing_id().cast(IntegerType())
-)
-
-print("\nDataFrame para a FATO_NPS criado com sucesso.")
-df_gold_fato_nps.printSchema()
+    print(f"Erro no processamento: {e}")
+    if 'spark' in locals():
+        spark.stop()
 
 # ==============================================================================
-# 4. Carregamento dos Dados no Banco de Dados (Sua Camada Gold)
+# 3. Carregamento dos Dados na Camada Gold
 # ==============================================================================
-if df_gold_fato_nps is not None:
+if 'df_gold_ft_nps' in locals() and df_gold_ft_nps is not None:
     try:
-        df_gold_fato_nps.write.jdbc(
-            url=jdbc_url,
-            table="FATO_NPS",
-            mode="overwrite",
-            properties=properties
-        )
+        df_gold_ft_nps.write.jdbc(url=jdbc_url, table="FATO_NPS", mode="overwrite", properties=properties)
         print("\nDados da FATO_NPS carregados com sucesso no banco de dados!")
     except Exception as e:
         print(f"Erro ao carregar dados no banco via JDBC: {e}")
-        print("Verifique a URL, credenciais e regras de firewall.")
 else:
     print("Processamento interrompido.")
 
