@@ -7,108 +7,84 @@ from pyspark.sql.types import IntegerType
 # 0. Configuração de Variáveis
 # ==============================================================================
 BUCKET_NAME = "weedle"
-# Substitua pelo seu tenancy namespace
 TENANCY_NAMESPACE = "gr7jlaomnxx1" 
 
-# Define os caminhos de leitura (Silver) e escrita (Gold)
 SILVER_PREFIX = f"oci://{BUCKET_NAME}@{TENANCY_NAMESPACE}/silver"
 GOLD_PREFIX = f"oci://{BUCKET_NAME}@{TENANCY_NAMESPACE}/gold"
 
-# Caminhos específicos para os dados de entrada
-silver_path_clientes = f"{SILVER_PREFIX}/clientes"
+# Caminhos de entrada para inferir a relação
 silver_path_historico = f"{SILVER_PREFIX}/historico"
+silver_path_clientes = f"{SILVER_PREFIX}/clientes"
 
-# Inicializa a sessão Spark
-spark = SparkSession.builder.appName("SilverToGoldDimProduto").getOrCreate()
+spark = SparkSession.builder.appName("SilverToGoldDimProduto_Inferido").getOrCreate()
 
 # ==============================================================================
 # 1. Parâmetros de Conexão JDBC
 # ==============================================================================
-# Configurações do seu banco de dados Oracle
 jdbc_url = "jdbc:oracle:thin:@oracle.fiap.com.br:1521:orcl"
-properties = {
-    "user": "RM555625",  # Substitua pelo seu usuário
-    "password": "100203", # Substitua pela sua senha
-    "driver": "oracle.jdbc.OracleDriver"
-}
+properties = { "user": "rm555625", "password": "100203", "driver": "oracle.jdbc.OracleDriver" }
 
-print(f"Lendo dados da camada Silver em: {silver_path_clientes} e {silver_path_historico}")
-
-df_gold_dim_produto = None
-
+print("Inferindo a relação entre código e descrição do produto...")
 
 # ==============================================================================
 # 2. Leitura e Processamento para a Camada Gold (DataFrame)
 # ==============================================================================
 try:
-    # Leitura dos dados da camada Silver
+    df_silver_historico = spark.read.parquet(silver_path_historico)
     df_silver_clientes = spark.read.parquet(silver_path_clientes)
 
-    # Extrai as colunas de produto e remove duplicatas para criar o catálogo
-    df_produtos_final = df_silver_clientes.select(
-        F.col("DS_PROD").alias("DS_PRODUTO"),
-        F.col("DS_LIN_REC").alias("DS_LINHA_RECEITA")
-    ).dropDuplicates()
+    # Passo 1: Criar uma lista de (cliente, código_produto) do histórico
+    df_rel_cliente_codigo = df_silver_historico.select("cd_cliente", "cd_prod").distinct()
 
-    # Trata os nulos na linha de receita
-    df_produtos_final = df_produtos_final.withColumn(
-        "DS_LINHA_RECEITA",
-        F.when(F.col("DS_LINHA_RECEITA").isNull(), "NÃO INFORMADA")
-         .otherwise(F.col("DS_LINHA_RECEITA"))
+    # Passo 2: Criar uma lista de (cliente, descricao_produto) da tabela clientes
+    df_rel_cliente_descricao = df_silver_clientes.select(
+        F.col("cd_cliente"),
+        F.col("ds_prod").alias("DS_PRODUTO"),
+        F.col("ds_lin_rec").alias("DS_LINHA_RECEITA")
+    ).distinct()
+
+    # Passo 3: Juntar as duas listas pelo cliente para inferir a relação (código -> descrição)
+    df_mapa_inferido = df_rel_cliente_codigo.join(
+        df_rel_cliente_descricao,
+        "cd_cliente",
+        "inner"
     )
 
-    # Define a janela para gerar a Surrogate Key
-    window_spec = Window.orderBy("DS_PRODUTO")
+    # Passo 4: Agora que temos o mapa, selecionamos o código e a descrição e removemos duplicatas
+    # para criar nossa dimensão.
+    df_produtos_final = df_mapa_inferido.select(
+        F.col("cd_prod").alias("CD_PRODUTO"),
+        F.col("DS_PRODUTO"),
+        F.col("DS_LINHA_RECEITA")
+    ).dropDuplicates(["CD_PRODUTO"])
+    
+    window_spec = Window.orderBy("CD_PRODUTO")
 
-    # Gera a Surrogate Key (SK) e seleciona as colunas finais
     df_gold_dim_produto = df_produtos_final.withColumn(
         "SK_PRODUTO",
         F.row_number().over(window_spec).cast(IntegerType())
-    ).select(
-        "SK_PRODUTO",
-        "DS_PRODUTO",
-        "DS_LINHA_RECEITA"
-    )
+    ).select("SK_PRODUTO", "CD_PRODUTO", "DS_PRODUTO", "DS_LINHA_RECEITA")
 
-    print("\nDataFrame para a DIM_PRODUTO criado com sucesso.")
+    print("\nDataFrame para a DIM_PRODUTO (inferido) criado com sucesso.")
     df_gold_dim_produto.printSchema()
-    df_gold_dim_produto.show(5, truncate=False)
+    print(f"Total de produtos na dimensão: {df_gold_dim_produto.count()}")
+
 
 except Exception as e:
-    print(f"Erro no processamento. Verifique a camada Silver: {e}")
-    spark.stop()
-
-
+    print(f"Erro no processamento da DIM_PRODUTO: {e}")
+    if 'spark' in locals():
+        spark.stop()
 
 # ==============================================================================
-# 3. Carregamento dos Dados no Banco de Dados e Object Storage (Camada Gold)
+# 3. Carregamento dos Dados na Camada Gold
 # ==============================================================================
-if df_gold_dim_produto is not None:
-    # Carregamento no Banco de Dados
+if 'df_gold_dim_produto' in locals() and df_gold_dim_produto is not None:
     try:
-        df_gold_dim_produto.write.jdbc(
-            url=jdbc_url,
-            table="DIM_PRODUTO",
-            mode="append", # Use "overwrite" se quiser recriar a tabela
-            properties=properties
-        )
+        df_gold_dim_produto.write.jdbc(url=jdbc_url, table="DIM_PRODUTO", mode="append", properties=properties)
         print("\nDados da DIM_PRODUTO carregados com sucesso no banco de dados!")
-
     except Exception as e:
-        print(f"Erro ao carregar dados no banco via JDBC: {e}")
-
-    # Salvando no Object Storage
-    try:
-        gold_path_dim_produto = f"{GOLD_PREFIX}/dim_produto"
-        df_gold_dim_produto.write.parquet(
-            gold_path_dim_produto,
-            mode="overwrite"
-        )
-        print(f"\nDados da DIM_PRODUTO salvos no Object Storage em: {gold_path_dim_produto}")
-    except Exception as e:
-        print(f"Erro ao salvar dados no Object Storage: {e}")
+        print(f"Erro ao carregar dados da DIM_PRODUTO no banco via JDBC: {e}")
 else:
-    print("Processamento interrompido. DataFrame de produto não foi criado.")
+    print("Processamento da DIM_PRODUTO interrompido.")
 
-# Finaliza a sessão Spark
 spark.stop()
