@@ -84,6 +84,18 @@ if 'df_gold_dim_produto' in locals() and df_gold_dim_produto is not None:
         print("\nDados da DIM_PRODUTO carregados com sucesso no banco de dados!")
     except Exception as e:
         print(f"Erro ao carregar dados da DIM_PRODUTO no banco via JDBC: {e}")
+
+        # Salvando no Object Storage (Camada Gold)
+    try:
+        gold_path_dim_produto = f"{GOLD_PREFIX}/dim_produto"
+        df_gold_dim_produto.write.parquet(
+            gold_path_dim_produto,
+            mode="overwrite"
+        )
+        print(f"\nDados da DIM_PRODUTO salvos no Object Storage em: {gold_path_dim_produto}")
+    except Exception as e:
+        print(f"Erro ao salvar dados no Object Storage: {e}")
+    # --- FIM DO BLOCO ADICIONADO ---
 else:
     print("Processamento da DIM_PRODUTO interrompido.")
 
