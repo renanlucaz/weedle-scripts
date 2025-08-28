@@ -113,6 +113,16 @@ if df_gold_ft_contratacoes is not None:
         print("\nDados da FATO_CONTRATACOES carregados com sucesso no banco de dados!")
     except Exception as e:
         print(f"Erro ao carregar dados no banco via JDBC: {e}")
+
+    try:
+        gold_path_ft_contratacoes = f"{GOLD_PREFIX}/fato_contratacoes"
+        df_gold_ft_contratacoes.write.parquet(
+            gold_path_ft_contratacoes,
+            mode="overwrite"
+        )
+        print(f"\nDados da DIM_TICKET salvos no Object Storage em: {gold_path_ft_contratacoes}")
+    except Exception as e:
+        print(f"Erro ao salvar dados no Object Storage: {e}")
 else:
     print("Processamento interrompido.")
 
